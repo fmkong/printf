@@ -20,6 +20,8 @@ set(CMAKE_CXX_STANDARD 11)
 
 include_directories(.)
 
+link_libraries(m)
+
 add_executable(
         ${PROJECT_NAME}.out
         printf.c

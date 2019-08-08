@@ -7,10 +7,10 @@
 uint8_t string_buffer[100] = { 0 };
 
 
-static bool dumpBinaryPutC(void* p, char c) {
-    *(*(char**)p)++ = c;
-    return true;
-}
+//static bool dumpBinaryPutC(void* p, char c) {
+//    *(*(char**)p)++ = c;
+//    return true;
+//}
 
 void osUsartLog(const char *format, ...)
 {
@@ -18,7 +18,7 @@ void osUsartLog(const char *format, ...)
     char* p = string_buffer;
 
     va_start(args, format);
-    int dataLength = (uint16_t)cvprintf(dumpBinaryPutC, PRINTF_FLAG_CHRE|PRINTF_FLAG_SHORT_DOUBLE, &p, format, args);
+    int dataLength = vsnprintf( string_buffer, sizeof(string_buffer), format, args);
     va_end(args);
     printf("%s", string_buffer);
 }
@@ -26,5 +26,25 @@ void osUsartLog(const char *format, ...)
 
 void main()
 {
-    osUsartLog("test %d\n", -1234);
+    osUsartLog("vsnprintf %lld\n", (uint64_t)-12348777222);
+
+    osUsartLog("vsnprintf %f\n", -123456.1234567);
+    osUsartLog("vsnprintf %f\n", -0.1234567);
+    osUsartLog("vsnprintf %f\n", 0.01234567);
+
+    osUsartLog("vsnprintf %f\n", -0.9999995);
+    printf("printf %f\n", -0.9999999);
+
+    osUsartLog("vsnprintf %.4f\n", 0.01234567);
+    printf("printf %.4f\n", 0.01234567);
+
+
+    osUsartLog("vsnprintf %.*s\n", 6, "abcdefghi");
+    printf("printf %.*s\n", 6, "abcdefghi");
+
+    osUsartLog("vsnprintf %.8s\n", "abcdefghi");
+    printf("printf %.8s\n", "abcdefghi");
+
+    osUsartLog("vsnprintf %8s\n", "abcdefghi");
+    printf("printf %8s\n", "abcdefghi");
 }

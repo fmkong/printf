@@ -1,496 +1,346 @@
 
-#include <stdio.h>
-#include <stddef.h>
-#include "printf.h"
+/*
+ * Copyright (c) 2008 Travis Geiselbrecht
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+#include <limits.h>
+#include <stdarg.h>
+#include <sys/types.h>
+#include <printf.h>
+#include <string.h>
+#include <math.h>
+#include "stdio.h"
 
-#define FLAG_ALT            (1 << 0)
-#define FLAG_ZERO_EXTEND    (1 << 1)
-#define FLAG_IS_SIGNED      (1 << 2)
-#define FLAG_NEG_PAD        (1 << 3)
-#define FLAG_CAPS           (1 << 4)
+#define LONGFLAG     0x00000001
+#define LONGLONGFLAG 0x00000002
+#define HALFFLAG     0x00000004
+#define HALFHALFFLAG 0x00000008
+#define SIZETFLAG    0x00000010
+#define ALTFLAG      0x00000020
+#define CAPSFLAG     0x00000040
+#define SHOWSIGNFLAG 0x00000080
+#define SIGNEDFLAG           0x00000100
+#define LEFTFORMATFLAG       0x00000200
+#define LEADZEROFLAG         0x00000400
+#define LONGDOUBLEGLAG       0x00000800
+#define LIMITEDSTRINGLENGLAG 0x00001000
 
-#define USE_PRINTF_FLAG_CHARS 1
+#define DEFAULT_NUM_DECIMALS (6)
 
-uint64_t U64_DIV_BY_CONST_U16(const uint64_t u64, const uint16_t u16)
+static char *longlong_to_string(char *buf, unsigned long long n, int len, uint flag)
 {
-    const uint16_t divBy = u16;
-    const uint64_t _num = u64;
-    const uint32_t numHi = _num >> 32, numLo = _num;
-    uint32_t t1, t2, t3, t4, t5;
+    int pos = len;
+    int negative = 0;
+    if((flag & SIGNEDFLAG) && (long long)n < 0) {
+        negative = 1;
+        n = -n;
+    }
+    buf[--pos] = 0;
 
-    t1 = numHi / divBy;
-    t2 = numHi % divBy;
-    t2 <<= 16;
-    t2 += numLo >> 16;
-    t3 = t2 / divBy;
-    t4 = t2 % divBy;
-    t4 <<= 16;
-    t4 += numLo & 0xFFFF;
-    t5 = t4 / divBy;
+    /* only do the math if the number is >= 10 */
+    while(n >= 10) {
+        int digit = n % 10;
+        n /= 10;
+        buf[--pos] = digit + '0';
+    }
+    buf[--pos] = n + '0';
 
-    return (((uint64_t)t1) << 32) + (((uint64_t)t3) << 16) + t5;
+    if(negative)
+        buf[--pos] = '-';
+    else if((flag & SHOWSIGNFLAG))
+        buf[--pos] = '+';
+    return &buf[pos];
 }
 
-struct PrintfData
+static char *double_to_string(char *buf, long double n, int len, uint flag, int num_decimals)
 {
-    uint64_t    number;
-    void       *userData;
-    uint32_t    fieldWidth;
-    uint32_t    precision;
-    uint32_t    flags;
-    uint8_t     posChar;
-    uint8_t     base;
-};
+    int pos = len;
+    int negative = 0;
+    long int integer_part;
+    long double decimal_part;
 
-static uint32_t StrPrvPrintfEx_number(printf_write_c putc_, struct PrintfData *data, bool *bail)
-{
-    char buf[64];
-    uint32_t idx = sizeof(buf) - 1;
-    uint32_t chr, i;
-    uint32_t numPrinted = 0;
+    if((flag & SIGNEDFLAG) && n < 0.0) {
+        negative = 1;
+        n = -n;
+    }
+    buf[--pos] = 0;
 
-    *bail = false;
-
-#ifdef USE_PRINTF_FLAG_CHARS
-    if (data->fieldWidth > sizeof(buf) - 1)
-        data->fieldWidth = sizeof(buf) - 1;
-
-    if (data->precision > sizeof(buf) - 1)
-        data->precision = sizeof(buf) - 1;
-#endif
-
-    buf[idx--] = 0;    //terminate
-
-    if (data->flags & FLAG_IS_SIGNED) {
-
-        if (((int64_t)data->number) < 0) {
-
-            data->posChar = '-';
-            data->number = -data->number;
-        }
+    /* do decimals to round up and round down */
+    long double temp = (n * pow(10, num_decimals));
+    if (temp - (long long int)temp > 0.5f) {
+        n += pow(10, -num_decimals);
     }
 
+    integer_part = (long int)n;
+    decimal_part = n - (long double)integer_part;
+
+    /* decimal part */
+    pos = pos - num_decimals;
+    int tmp_pos = pos;
+    while(num_decimals-- > 0) {
+        int digit = (int)(decimal_part * 10);
+        buf[tmp_pos++] = digit + '0';
+        decimal_part = decimal_part * 10 - digit;
+    }
+
+    buf[--pos] = '.';
+    /* integer part */
+    while(integer_part >= 10) {
+        int digit = integer_part % 10;
+        integer_part /= 10;
+        buf[--pos] = digit + '0';
+    }
+    buf[--pos] = integer_part + '0';
+
+    if(negative)
+        buf[--pos] = '-';
+    else if((flag & SHOWSIGNFLAG))
+        buf[--pos] = '+';
+    return &buf[pos];
+}
+
+static char *longlong_to_hexstring(char *buf, unsigned long long u, int len, uint flag)
+{
+    int pos = len;
+    static const char hextable[] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
+    static const char hextable_caps[] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
+    const char *table;
+    if((flag & CAPSFLAG))
+        table = hextable_caps;
+    else
+        table = hextable;
+    buf[--pos] = 0;
     do {
-        if (data->base == 8) {
+        unsigned int digit = u % 16;
+        u /= 16;
 
-            chr = (data->number & 0x07) + '0';
-            data->number >>= 3;
-        }
-        else if (data->base == 10) {
-
-            uint64_t t = U64_DIV_BY_CONST_U16(data->number, 10);
-            chr = (data->number - t * 10) + '0';
-            data->number = t;
-        }
-        else {
-
-            chr = data->number & 0x0F;
-            data->number >>= 4;
-            chr = (chr >= 10) ? (chr + (data->flags & FLAG_CAPS ? 'A' : 'a') - 10) : (chr + '0');
-        }
-
-        buf[idx--] = chr;
-
-        numPrinted++;
-
-    } while (data->number);
-
-#ifdef USE_PRINTF_FLAG_CHARS
-    while (data->precision > numPrinted) {
-
-        buf[idx--] = '0';
-        numPrinted++;
-    }
-
-    if (data->flags & FLAG_ALT) {
-
-        if (data->base == 8) {
-
-            if (buf[idx+1] != '0') {
-                buf[idx--] = '0';
-                numPrinted++;
-            }
-        }
-        else if (data->base == 16) {
-
-            buf[idx--] = data->flags & FLAG_CAPS ? 'X' : 'x';
-            numPrinted++;
-            buf[idx--] = '0';
-            numPrinted++;
-        }
-    }
-
-
-    if (!(data->flags & FLAG_NEG_PAD)) {
-
-        if (data->fieldWidth > 0 && data->posChar != '\0')
-            data->fieldWidth--;
-
-        while (data->fieldWidth > numPrinted) {
-
-            buf[idx--] = data->flags & FLAG_ZERO_EXTEND ? '0' : ' ';
-            numPrinted++;
-        }
-    }
-#endif
-
-    if (data->posChar != '\0') {
-
-        buf[idx--] = data->posChar;
-        numPrinted++;
-    }
-
-    idx++;
-
-    for(i = 0; i < numPrinted; i++) {
-
-        if (!putc_(data->userData,(buf + idx)[i])) {
-
-            *bail = true;
-            break;
-        }
-    }
-
-#ifdef USE_PRINTF_FLAG_CHARS
-    if (!*bail && data->flags & FLAG_NEG_PAD) {
-
-        for(i = numPrinted; i < data->fieldWidth; i++) {
-
-            if (!putc_(data->userData, ' ')) {
-
-                *bail = true;
-                break;
-            }
-        }
-    }
-#endif
-
-    return i;
+        buf[--pos] = table[digit];
+    } while(u != 0);
+    return &buf[pos];
 }
 
-static uint32_t StrVPrintf_StrLen_withMax(const char* s, uint32_t max)
+int vsnprintf(char *str, size_t len, const char *fmt, va_list ap)
 {
-    uint32_t len = 0;
-
-    while ((*s++) && (len < max)) len++;
-
-    return len;
-}
-
-static uint32_t StrVPrintf_StrLen(const char* s)
-{
-    uint32_t len = 0;
-
-    while (*s++) len++;
-
-    return len;
-}
-
-static inline char prvGetChar(const char** fmtP)
-{
-
-    return *(*fmtP)++;
-}
-
-uint32_t cvprintf(printf_write_c putc_f, uint32_t flags, void* userData, const char* fmtStr, va_list vl)
-{
-
-    char c, t;
-    uint32_t numPrinted = 0;
+    char c;
+    unsigned char uc;
+    const char *s;
+    unsigned long long n;
     double dbl;
     long double ldbl;
-    struct PrintfData data;
-
-    data.userData = userData;
-
-#define putc_(_ud,_c)                \
-        do {                 \
-            if (!putc_f(_ud,_c))    \
-                goto out;    \
-        } while(0)
-
-    while ((c = prvGetChar(&fmtStr)) != 0) {
-
-        if (c == '\n') {
-
-            putc_(userData,c);
-            numPrinted++;
+    void *ptr;
+    int flags;
+    unsigned int format_num;
+    size_t chars_written = 0;
+    char num_buffer[32];
+#define OUTPUT_CHAR(c) do { (*str++ = c); chars_written++; if (chars_written + 1 == len) goto done; } while(0)
+#define OUTPUT_CHAR_NOLENCHECK(c) do { (*str++ = c); chars_written++; } while(0)
+    for(;;) {
+        /* handle regular chars that aren't format related */
+        while((c = *fmt++) != 0) {
+            if(c == '%')
+                break; /* we saw a '%', break and start parsing format */
+            OUTPUT_CHAR(c);
         }
-        else if (c == '%') {
-            uint32_t len, i;
-            const char* str;
-            bool useChar = false, useShort = false, useLong = false, useLongLong = false, useLongDouble =false, useSizeT = false, usePtrdiffT = false;
-            bool havePrecision = false, bail = false;
+        /* make sure we haven't just hit the end of the string */
+        if(c == 0)
+            break;
+        /* reset the format state */
+        flags = 0;
+        format_num = 0;
+        next_format:
+        /* grab the next format character */
+        c = *fmt++;
+        if(c == 0)
+            break;
 
-            data.fieldWidth = 0;
-            data.precision = 0;
-            data.flags = 0;
-            data.posChar = 0;
+        switch(c) {
+            case '0'...'9':
+                if (c == '0' && format_num == 0)
+                    flags |= LEADZEROFLAG;
+                format_num *= 10;
+                format_num += c - '0';
+                goto next_format;
+            case '.':
+                /* XXX for now eat numeric formatting */
+                goto next_format;
+            case '%':
+                OUTPUT_CHAR('%');
+                break;
+            case 'c':
+                uc = va_arg(ap, unsigned int);
+                OUTPUT_CHAR(uc);
+                break;
+            case 's':
+                s = va_arg(ap, const char *);
+                if(s == 0)
+                    s = "<null>";
+                goto _output_string;
+            case '-':
+                flags |= LEFTFORMATFLAG;
+                goto next_format;
+            case '+':
+                flags |= SHOWSIGNFLAG;
+                goto next_format;
+            case '#':
+                flags |= ALTFLAG;
+                goto next_format;
+            case 'L':
+                flags |= LONGDOUBLEGLAG;
+                goto next_format;
+            case 'l':
+                if(flags & LONGFLAG)
+                    flags |= LONGLONGFLAG;
+                flags |= LONGFLAG;
+                goto next_format;
+            case 'h':
+                if(flags & HALFFLAG)
+                    flags |= HALFHALFFLAG;
+                flags |= HALFFLAG;
+                goto next_format;
+            case 'z':
+                flags |= SIZETFLAG;
+                goto next_format;
+            case 'D':
+                flags |= LONGFLAG;
+                /* fallthrough */
+            case 'i':
+            case 'd':
+                n = (flags & LONGLONGFLAG) ? va_arg(ap, long long) :
+                    (flags & LONGFLAG) ? va_arg(ap, long) :
+                    (flags & HALFHALFFLAG) ? (signed char)va_arg(ap, int) :
+                    (flags & HALFFLAG) ? (short)va_arg(ap, int) :
+                    (flags & SIZETFLAG) ? va_arg(ap, ssize_t) :
+                    va_arg(ap, int);
+                flags |= SIGNEDFLAG;
+                s = longlong_to_string(num_buffer, n, sizeof(num_buffer), flags);
+                goto _output_string;
+            case 'U':
+                flags |= LONGFLAG;
+                /* fallthrough */
+            case 'u':
+                n = (flags & LONGLONGFLAG) ? va_arg(ap, unsigned long long) :
+                    (flags & LONGFLAG) ? va_arg(ap, unsigned long) :
+                    (flags & HALFHALFFLAG) ? (unsigned char)va_arg(ap, unsigned int) :
+                    (flags & HALFFLAG) ? (unsigned short)va_arg(ap, unsigned int) :
+                    (flags & SIZETFLAG) ? va_arg(ap, size_t) :
+                    va_arg(ap, unsigned int);
+                s = longlong_to_string(num_buffer, n, sizeof(num_buffer), flags);
+                goto _output_string;
+            case 'p':
+                flags |= LONGFLAG | ALTFLAG;
+                goto hex;
+            case 'X':
+                flags |= CAPSFLAG;
+                /* fallthrough */
+            case '*':
+                format_num = va_arg(ap, unsigned int);
+                flags |= LIMITEDSTRINGLENGLAG;
+                printf("format_num = %d\n", format_num);
+                goto next_format;
+            case 'F':
+                flags |= CAPSFLAG;
+            case 'f':
+                flags |= SIGNEDFLAG;
+                if (flags & LONGDOUBLEGLAG) {
+                    ldbl = va_arg(ap, long double);
+                    s = double_to_string(num_buffer, ldbl, sizeof(num_buffer), flags, format_num > 0 ? format_num : DEFAULT_NUM_DECIMALS);
+                } else {
+                    dbl = va_arg(ap, double);
+                    s = double_to_string(num_buffer, dbl, sizeof(num_buffer), flags, format_num > 0 ? format_num : DEFAULT_NUM_DECIMALS);
+                }
+                goto _output_string;
+            hex:
+            case 'x':
+                n = (flags & LONGLONGFLAG) ? va_arg(ap, unsigned long long) :
+                    (flags & LONGFLAG) ? va_arg(ap, unsigned long) :
+                    (flags & HALFHALFFLAG) ? (unsigned char)va_arg(ap, unsigned int) :
+                    (flags & HALFFLAG) ? (unsigned short)va_arg(ap, unsigned int) :
+                    (flags & SIZETFLAG) ? va_arg(ap, size_t) :
+                    va_arg(ap, unsigned int);
+                s = longlong_to_hexstring(num_buffer, n, sizeof(num_buffer), flags);
+                if(flags & ALTFLAG) {
+                    OUTPUT_CHAR('0');
+                    OUTPUT_CHAR((flags & CAPSFLAG) ? 'X': 'x');
+                }
+                goto _output_string;
+            case 'n':
+                ptr = va_arg(ap, void *);
+                if(flags & LONGLONGFLAG)
+                    *(long long *)ptr = chars_written;
+                else if(flags & LONGFLAG)
+                    *(long *)ptr = chars_written;
+                else if(flags & HALFHALFFLAG)
+                    *(signed char *)ptr = chars_written;
+                else if(flags & HALFFLAG)
+                    *(short *)ptr = chars_written;
+                else if(flags & SIZETFLAG)
+                    *(size_t *)ptr = chars_written;
+                else
+                    *(int *)ptr = chars_written;
+                break;
 
-            more_fmt:
-
-            c = prvGetChar(&fmtStr);
-
-            switch(c) {
-
-                case '%':
-
-                    putc_(userData,c);
-                    numPrinted++;
-                    break;
-
-                case 'c':
-
-                    t = va_arg(vl,unsigned int);
-                    putc_(userData,t);
-                    numPrinted++;
-                    break;
-
-                case 's':
-
-                    str = va_arg(vl,char*);
-                    if (!str) str = "(null)";
-
-                    if (data.precision)
-                        len = StrVPrintf_StrLen_withMax(str,data.precision);
-                    else
-                        len = StrVPrintf_StrLen(str);
-
-#ifdef USE_PRINTF_FLAG_CHARS
-                if (!(data.flags & FLAG_NEG_PAD)) {
-                        for(i = len; i < data.fieldWidth; i++) {
-                            putc_(userData, ' ');
-                            numPrinted++;
-                        }
-                    }
-#endif
-
-                    for(i = 0; i < len; i++) {
-                        putc_(userData,*str++);
-                        numPrinted++;
-                    }
-
-#ifdef USE_PRINTF_FLAG_CHARS
-                if (data.flags & FLAG_NEG_PAD) {
-                        for(i = len; i < data.fieldWidth; i++) {
-                            putc_(userData, ' ');
-                            numPrinted++;
-                        }
-                    }
-#endif
-
-                    break;
-
-                case '.':
-
-                    havePrecision = true;
-                    goto more_fmt;
-
-                case '0':
-
-                    if (!(data.flags & FLAG_ZERO_EXTEND) && !data.fieldWidth && !havePrecision) {
-
-                        data.flags |= FLAG_ZERO_EXTEND;
-                        goto more_fmt;
-                    }
-
-                case '1':
-                case '2':
-                case '3':
-                case '4':
-                case '5':
-                case '6':
-                case '7':
-                case '8':
-                case '9':
-
-                    if (havePrecision)
-                        data.precision = (data.precision * 10) + c - '0';
-                    else
-                        data.fieldWidth = (data.fieldWidth * 10) + c - '0';
-                    goto more_fmt;
-
-                case '#':
-
-                    data.flags |= FLAG_ALT;
-                    goto more_fmt;
-
-                case '-':
-
-                    data.flags |= FLAG_NEG_PAD;
-                    goto more_fmt;
-
-                case '+':
-
-                    data.posChar = '+';
-                    goto more_fmt;
-
-                case ' ':
-
-                    if (data.posChar != '+')
-                        data.posChar = ' ';
-                    goto more_fmt;
-
-#define GET_UVAL64() \
-        useSizeT ? va_arg(vl, size_t) :                 \
-        usePtrdiffT ? va_arg(vl, ptrdiff_t) :           \
-        useLongLong ? va_arg(vl, unsigned long long) :  \
-        useLong ? va_arg(vl, unsigned long) :           \
-        useChar ? (unsigned char)va_arg(vl, unsigned int) : \
-        useShort ? (unsigned short)va_arg(vl, unsigned int) : \
-        va_arg(vl, unsigned int)
-
-#define GET_SVAL64() \
-        useSizeT ? va_arg(vl, size_t) :                 \
-        usePtrdiffT ? va_arg(vl, ptrdiff_t) :           \
-        useLongLong ? va_arg(vl, signed long long) :    \
-        useLong ? va_arg(vl, signed long) :             \
-        useChar ? (signed char)va_arg(vl, signed int) : \
-        useShort ? (signed short)va_arg(vl, signed int) : \
-        va_arg(vl, signed int)
-
-                case 'u':
-
-                    data.number = GET_UVAL64();
-                    data.base = 10;
-                    data.flags &= ~(FLAG_ALT | FLAG_CAPS);
-                    numPrinted += StrPrvPrintfEx_number(putc_f, &data, &bail);
-                    if (bail)
-                        goto out;
-                    break;
-
-                case 'd':
-                case 'i':
-
-                    data.number = GET_SVAL64();
-                    data.base = 10;
-                    data.flags &= ~(FLAG_ALT | FLAG_CAPS);
-                    data.flags |= FLAG_IS_SIGNED;
-                    numPrinted += StrPrvPrintfEx_number(putc_f, &data, &bail);
-                    if (bail)
-                        goto out;
-                    break;
-
-                case 'o':
-
-                    data.number = GET_UVAL64();
-                    data.base = 8;
-                    data.flags &= ~FLAG_CAPS;
-                    data.posChar = '\0';
-                    numPrinted += StrPrvPrintfEx_number(putc_f, &data, &bail);
-                    if (bail)
-                        goto out;
-                    break;
-
-                case 'X':
-
-                    data.flags |= FLAG_CAPS;
-
-                case 'x':
-
-                    data.number = GET_UVAL64();
-                    data.base = 16;
-                    data.posChar = '\0';
-                    numPrinted += StrPrvPrintfEx_number(putc_f, &data, &bail);
-                    if (bail)
-                        goto out;
-                    break;
-
-                case 'p':
-
-                    data.number = (uintptr_t)va_arg(vl, const void*);
-                    data.base = 16;
-                    data.flags &= ~FLAG_CAPS;
-                    data.flags |= FLAG_ALT;
-                    data.posChar = '\0';
-                    numPrinted += StrPrvPrintfEx_number(putc_f, &data, &bail);
-                    if (bail)
-                        goto out;
-                    break;
-
-#undef GET_UVAL64
-#undef GET_SVAL64
-
-                case 'F':
-
-                    data.flags |= FLAG_CAPS;
-
-                case 'f':
-
-                    if (flags & PRINTF_FLAG_CHRE) {
-                        if (flags & PRINTF_FLAG_SHORT_DOUBLE) {
-                            if (useLongDouble) {
-                                dbl = va_arg(vl, double);
-                                data.number = *(uint64_t *)(&dbl);
-                            } else {
-                                // just grab the 32-bits
-                                data.number = va_arg(vl, uint32_t);
-                            }
-                        } else {
-                            if (useLongDouble) {
-                                ldbl = va_arg(vl, long double);
-                                data.number = *(uint64_t *)(&ldbl);
-                            } else {
-                                dbl = va_arg(vl, double);
-                                data.number = *(uint64_t *)(&dbl);
-                            }
-                        }
-                        data.base = 16;
-                        data.flags |= FLAG_ALT;
-                        data.posChar = '\0';
-                        numPrinted += StrPrvPrintfEx_number(putc_f, &data, &bail);
-                    } else {
-                        bail = true;
-                    }
-                    if (bail)
-                        goto out;
-                    break;
-
-                case 'h':
-
-                    if (useShort)
-                        useChar = true;
-                    useShort = true;
-                    goto more_fmt;
-
-                case 'L':
-
-                    useLongDouble = true;
-                    goto more_fmt;
-
-                case 'l':
-
-                    if (useLong)
-                        useLongLong = true;
-                    useLong = true;
-                    goto more_fmt;
-
-                case 'z':
-
-                    useSizeT = true;
-                    goto more_fmt;
-
-                case 't':
-
-                    usePtrdiffT = true;
-                    goto more_fmt;
-
-                default:
-
-                    putc_(userData,c);
-                    numPrinted++;
-                    break;
-
+            default:
+                OUTPUT_CHAR('%');
+                OUTPUT_CHAR(c);
+                break;
+        }
+        /* move on to the next field */
+        continue;
+        /* shared output code */
+        _output_string:
+        if (flags & LEFTFORMATFLAG) {
+            /* left justify the text */
+            uint count = 0;
+            while(*s != 0 && ((flags&LIMITEDSTRINGLENGLAG)?(count < format_num):1)) {
+                OUTPUT_CHAR(*s++);
+                count++;
+            }
+            /* pad to the right (if necessary) */
+            for (; format_num > count; format_num--)
+                OUTPUT_CHAR(' ');
+        } else {
+            /* right justify the text (digits) */
+            size_t string_len = strlen(s);
+            uint count = 0;
+            char outchar = (flags & LEADZEROFLAG) ? '0' : ' ';
+            for (; format_num > string_len; format_num--)
+                OUTPUT_CHAR(outchar);
+            /* output the string */
+            while(*s != 0 && ((flags&LIMITEDSTRINGLENGLAG)?(count < format_num):1)) {
+                OUTPUT_CHAR(*s++);
+                count++;
             }
         }
-        else {
-
-            putc_(userData,c);
-            numPrinted++;
-        }
+        continue;
     }
+    done:
+    /* null terminate */
+    OUTPUT_CHAR_NOLENCHECK('\0');
+    chars_written--; /* don't count the null */
+#undef OUTPUT_CHAR
+#undef OUTPUT_CHAR_NOLENCHECK
+    return chars_written;
+}
 
-    out:
-
-    return numPrinted;
+int vsprintf(char *str, const char *fmt, va_list ap)
+{
+    return vsnprintf(str, INT_MAX, fmt, ap);
 }
