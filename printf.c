@@ -41,7 +41,9 @@
 #define LEFTFORMATFLAG       0x00000200
 #define LEADZEROFLAG         0x00000400
 #define LONGDOUBLEGLAG       0x00000800
-#define LIMITEDSTRINGLENGLAG 0x00001000
+#define STRINGOUTPUTFLAG     0x00001000
+#define HASPREFORMATNUM      0x00002000
+
 
 #define DEFAULT_NUM_DECIMALS (6)
 
@@ -148,6 +150,7 @@ int vsnprintf(char *str, size_t len, const char *fmt, va_list ap)
     void *ptr;
     int flags;
     unsigned int format_num;
+    unsigned int pre_format_num;
     size_t chars_written = 0;
     char num_buffer[32];
 #define OUTPUT_CHAR(c) do { (*str++ = c); chars_written++; if (chars_written + 1 == len) goto done; } while(0)
@@ -165,6 +168,7 @@ int vsnprintf(char *str, size_t len, const char *fmt, va_list ap)
         /* reset the format state */
         flags = 0;
         format_num = 0;
+        pre_format_num = 0;
         next_format:
         /* grab the next format character */
         c = *fmt++;
@@ -175,11 +179,17 @@ int vsnprintf(char *str, size_t len, const char *fmt, va_list ap)
             case '0'...'9':
                 if (c == '0' && format_num == 0)
                     flags |= LEADZEROFLAG;
-                format_num *= 10;
-                format_num += c - '0';
+                if ((flags & HASPREFORMATNUM)) {
+                    format_num *= 10;
+                    format_num += c - '0';
+                } else {
+                    pre_format_num *= 10;
+                    pre_format_num += c - '0';
+                }
                 goto next_format;
             case '.':
                 /* XXX for now eat numeric formatting */
+                flags |= HASPREFORMATNUM;
                 goto next_format;
             case '%':
                 OUTPUT_CHAR('%');
@@ -192,6 +202,7 @@ int vsnprintf(char *str, size_t len, const char *fmt, va_list ap)
                 s = va_arg(ap, const char *);
                 if(s == 0)
                     s = "<null>";
+                flags |= STRINGOUTPUTFLAG;
                 goto _output_string;
             case '-':
                 flags |= LEFTFORMATFLAG;
@@ -201,9 +212,6 @@ int vsnprintf(char *str, size_t len, const char *fmt, va_list ap)
                 goto next_format;
             case '#':
                 flags |= ALTFLAG;
-                goto next_format;
-            case 'L':
-                flags |= LONGDOUBLEGLAG;
                 goto next_format;
             case 'l':
                 if(flags & LONGFLAG)
@@ -247,27 +255,36 @@ int vsnprintf(char *str, size_t len, const char *fmt, va_list ap)
             case 'p':
                 flags |= LONGFLAG | ALTFLAG;
                 goto hex;
-            case 'X':
-                flags |= CAPSFLAG;
-                /* fallthrough */
+
             case '*':
-                format_num = va_arg(ap, unsigned int);
-                flags |= LIMITEDSTRINGLENGLAG;
-                printf("format_num = %d\n", format_num);
+                if (flags & HASPREFORMATNUM) {
+                    format_num = va_arg(ap, unsigned int);
+                } else {
+                    pre_format_num = va_arg(ap, unsigned int);
+                }
                 goto next_format;
             case 'F':
-                flags |= CAPSFLAG;
+                flags |= LONGDOUBLEGLAG;
             case 'f':
                 flags |= SIGNEDFLAG;
                 if (flags & LONGDOUBLEGLAG) {
                     ldbl = va_arg(ap, long double);
-                    s = double_to_string(num_buffer, ldbl, sizeof(num_buffer), flags, format_num > 0 ? format_num : DEFAULT_NUM_DECIMALS);
+                    s = double_to_string(num_buffer,
+                            ldbl, sizeof(num_buffer),
+                            flags,
+                            format_num > 0 ? format_num : DEFAULT_NUM_DECIMALS);
                 } else {
                     dbl = va_arg(ap, double);
-                    s = double_to_string(num_buffer, dbl, sizeof(num_buffer), flags, format_num > 0 ? format_num : DEFAULT_NUM_DECIMALS);
+                    s = double_to_string(num_buffer,
+                            dbl, sizeof(num_buffer),
+                            flags,
+                            format_num > 0 ? format_num : DEFAULT_NUM_DECIMALS);
                 }
                 goto _output_string;
             hex:
+            case 'X':
+                flags |= CAPSFLAG;
+                /* fallthrough */
             case 'x':
                 n = (flags & LONGLONGFLAG) ? va_arg(ap, unsigned long long) :
                     (flags & LONGFLAG) ? va_arg(ap, unsigned long) :
@@ -309,7 +326,7 @@ int vsnprintf(char *str, size_t len, const char *fmt, va_list ap)
         if (flags & LEFTFORMATFLAG) {
             /* left justify the text */
             uint count = 0;
-            while(*s != 0 && ((flags&LIMITEDSTRINGLENGLAG)?(count < format_num):1)) {
+            while(*s != 0 &&((format_num > 0 && flags & STRINGOUTPUTFLAG) ? (count < format_num) : 1)) {
                 OUTPUT_CHAR(*s++);
                 count++;
             }
@@ -321,10 +338,14 @@ int vsnprintf(char *str, size_t len, const char *fmt, va_list ap)
             size_t string_len = strlen(s);
             uint count = 0;
             char outchar = (flags & LEADZEROFLAG) ? '0' : ' ';
+            if (pre_format_num > 0) {
+                for (; pre_format_num > format_num; pre_format_num--)
+                    OUTPUT_CHAR(outchar);
+            }
             for (; format_num > string_len; format_num--)
                 OUTPUT_CHAR(outchar);
             /* output the string */
-            while(*s != 0 && ((flags&LIMITEDSTRINGLENGLAG)?(count < format_num):1)) {
+            while(*s != 0 && ((format_num > 0 && flags & STRINGOUTPUTFLAG) ? (count < format_num) : 1)) {
                 OUTPUT_CHAR(*s++);
                 count++;
             }
